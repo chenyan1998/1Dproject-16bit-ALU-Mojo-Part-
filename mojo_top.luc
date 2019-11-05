@@ -1,0 +1,155 @@
+module mojo_top (
+    input clk,              // 50MHz clock
+    input rst_n,            // reset button (active low)
+    output led [8],         // 8 user controllable LEDs
+    input cclk,             // configuration clock, AVR ready when high
+    output spi_miso,        // AVR SPI MISO
+    input spi_ss,           // AVR SPI Slave Select
+    input spi_mosi,         // AVR SPI MOSI
+    input spi_sck,          // AVR SPI Clock
+    output spi_channel [4], // AVR general purpose pins (used by default to select ADC channel)
+    input avr_tx,           // AVR TX (FPGA RX)
+    output avr_rx,          // AVR RX (FPGA TX)
+    input avr_rx_busy,       // AVR RX buffer full
+    output io_led[3][8],
+    output io_seg[8],
+    output io_sel[4],
+    input io_button[5],
+    input io_dip[3][8]
+
+    
+  ) {
+  
+  sig rst;                  // reset signal
+  
+  alu16 alu; //import alu to do the computation
+  
+  test_case_rom rom; //import rom, where we hardcode our auto test cases.
+  
+  .clk(clk) {
+    // The reset conditioner is used to synchronize the reset signal to the FPGA
+    // clock. This ensures the entire FPGA comes out of reset at the same time.
+    reset_conditioner reset_cond;
+    //when finishing adjusting a input, press io_shield left button to update,
+    //same for b input, but need to press right button
+    //after that, press top button to compute the result
+    //we can also adjust alufn[5:0] to decide which operation to do
+    reset_conditioner a_con(.in(io_button[3]));
+    
+    reset_conditioner b_con(.in(io_button[4]));
+    
+    reset_conditioner start(.in(io_button[0]));
+    
+    .rst(rst){
+      //clearly this a and b are for maual test, that the mojo will hold value a and value b every clock cycle
+      dff a[16];
+      
+      dff b[16];
+      //test driver to check whether they are correct
+      test_driver driver(#SEL_MAX(53),.start(start.out),.ref_out(rom.ref_out));
+      //seven segment to display whether pass or fail
+      sevseg4 sevseg;   
+    }   
+  }
+
+  
+  always {
+    reset_cond.in = ~rst_n; // input raw inverted reset signal
+    rst = reset_cond.out;   // conditioned reset
+    
+    led = 8h00;             // turn LEDs off
+    spi_miso = bz;          // not using SPI
+    spi_channel = bzzzz;    // not using flags
+    avr_rx = bz;            // not using serial port
+    
+    io_led=3x{{8h00}};
+    io_seg=8hff;
+    io_sel=4hf;
+
+    rom.sel=driver.sel; //as time going on, rom.sel will change, depending on the output sel of driver
+                        //the rom test cases are driven by driver by selctor.
+    driver.alu_out=alu.alu | c{io_dip[1],io_dip[0]}; //why there is an |? It depends whether is auto test or manual test.
+    case(a_con.out){
+    
+      1:
+        //a value are stored in the middle and right sets of DIP switch
+        //a value refresh every clock cycle
+        a.d=c{io_dip[1],io_dip[0]};
+      
+      default:
+      
+        a.d=a.q; 
+    }
+    case(b_con.out){
+    
+      1:
+        //b value are stored in the middle and right sets of DIP switch
+        //b value refresh every clock cycle
+        b.d=c{io_dip[1],io_dip[0]};
+        
+      default:
+      
+        b.d=b.q;
+    }
+    case(~driver.done&driver.pass){
+      //if the testing is still going on and no error occurs yet
+      1:
+        alu.a=rom.a; // alu.a , alu.b , alu.alufn takes in the value hardcoded in rom
+        alu.b=rom.b;
+        alu.alufn=rom.alufn;
+        
+      default:
+      
+        alu.alufn=io_dip[2][5:0]; //default is manual test, 
+        alu.a=a.q; //that alu.alufn, alu.a, alu.q takes in what io_shield displays
+        alu.b=b.q; 
+           
+    }
+    
+  
+    case({driver.done&driver.pass}){
+    
+      {1,1}:
+        //if driver.done and drive.pass is true, 
+        //we display PASS on our 7-segments
+        sevseg.segs_array={8b01110011,8b01110111,8b01101101,8b01101101};
+        //output shows on the middle and right sets of LED
+        io_led[1]=alu.alu[15:8];
+        io_led[0]=alu.alu[7:0];
+        
+      {1,0}:
+        //if driver is done but it doesn't pass,
+        //we display FAIL on our 7-segments
+        sevseg.segs_array={8b01110001,8b01110111,8b00110000,8b00111000};
+        
+        io_led[1]=rom.alufn; //show "alufn" of last tested case on LEDs 13-8
+        io_led[0]=driver.sel-1; //show index of last tested case on LEDS 7-0
+        
+      {0,1}:
+        //the test havn't failed
+        //show the output on LEDs 13:0 and PASS on 7 Segments
+        io_led[1]=alu.alu[15:8];
+        io_led[0]=alu.alu[7:0];
+        sevseg.segs_array={8b01110011,8b01110111,8b01101101,8b01101101};
+        
+        
+      default:
+      
+        sevseg.segs_array={8b0,8b0,8b0,8b0};
+        
+        
+    }
+    //led 21,22,23 to display the outputs z, v, n
+    io_led[2][5]=alu.z;
+    io_led[2][6]=alu.v;
+    io_led[2][7]=alu.n;
+    
+    io_seg=~sevseg.segs;
+    io_sel=~sevseg.sel;
+    
+    
+    
+    
+    
+  }
+}
